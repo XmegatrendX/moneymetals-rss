@@ -5,17 +5,15 @@ from datetime import datetime
 from xml.etree.ElementTree import Element, SubElement, ElementTree
 import io
 
-PORT = 10000  # Можно оставить, Render подхватит свой порт
+PORT = 10000
 SOURCE = "https://www.moneymetals.com/news"
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def build_rss():
-    # Получаем HTML
     html = requests.get(SOURCE, headers=HEADERS, timeout=20).text
     soup = BeautifulSoup(html, "html.parser")
 
-    # Создаём RSS
     rss = Element("rss", version="2.0")
     channel = SubElement(rss, "channel")
 
@@ -28,17 +26,16 @@ def build_rss():
 
     seen = set()
 
-    # === Парсим статьи ===
-    for article in soup.select("article"):
-        a = article.find("a", href=True)
+    # === Новый рабочий селектор ===
+    for div in soup.select("div.newsItem"):
+        a = div.find("a", href=True)
         if not a:
             continue
-
         href = a["href"]
         if not href.startswith("/news/"):
             continue
 
-        title = article.get_text(" ", strip=True)
+        title = a.get_text(strip=True)
         if not title:
             continue
 
@@ -59,14 +56,13 @@ def build_rss():
     ElementTree(rss).write(buf, encoding="utf-8", xml_declaration=True)
     return buf.getvalue()
 
-# === HTTP-сервер ===
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/moneymetals.xml":
             self.send_response(404)
             self.end_headers()
             return
-
         try:
             rss = build_rss()
             self.send_response(200)
@@ -78,11 +74,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(str(e).encode())
 
-    # Optional: для красоты, чтобы Render не ругался на HEAD
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
 
 
-# === Запуск сервера ===
 HTTPServer(("", PORT), Handler).serve_forever()
