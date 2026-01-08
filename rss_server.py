@@ -1,82 +1,97 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 from bs4 import BeautifulSoup
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
-from xml.etree.ElementTree import Element, SubElement, ElementTree
-import io
+import xml.etree.ElementTree as ET
+import email.utils
+import os
 
-PORT = 10000
-SOURCE = "https://www.moneymetals.com/news"
+SOURCE_URL = "https://www.moneymetals.com/news"
+BASE_URL = "https://www.moneymetals.com"
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def build_rss():
-    html = requests.get(SOURCE, headers=HEADERS, timeout=20).text
-    soup = BeautifulSoup(html, "html.parser")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; RSSBot/1.0)"
+    }
 
-    rss = Element("rss", version="2.0")
-    channel = SubElement(rss, "channel")
+    r = requests.get(SOURCE_URL, headers=headers, timeout=20)
+    r.raise_for_status()
 
-    SubElement(channel, "title").text = "MoneyMetals News"
-    SubElement(channel, "link").text = SOURCE
-    SubElement(channel, "description").text = "MoneyMetals News RSS"
-    SubElement(channel, "lastBuildDate").text = datetime.utcnow().strftime(
-        "%a, %d %b %Y %H:%M:%S GMT"
-    )
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    seen = set()
+    rss = ET.Element("rss", version="2.0")
+    channel = ET.SubElement(rss, "channel")
 
-    # === Новый рабочий селектор ===
-    for div in soup.select("div.newsItem"):
-        a = div.find("a", href=True)
-        if not a:
-            continue
-        href = a["href"]
-        if not href.startswith("/news/"):
+    ET.SubElement(channel, "title").text = "Money Metals News"
+    ET.SubElement(channel, "link").text = SOURCE_URL
+    ET.SubElement(channel, "description").text = "Latest news from MoneyMetals.com"
+    ET.SubElement(channel, "lastBuildDate").text = email.utils.formatdate(usegmt=True)
+
+    # === ПАРСИНГ ===
+    for block in soup.select("div.flex.mb-8.px-4"):
+        a = block.select_one("a[href]")
+        date_p = block.select_one("p.text-slate-500")
+
+        if not a or not date_p:
             continue
 
         title = a.get_text(strip=True)
-        if not title:
-            continue
+        link = a["href"]
+        if link.startswith("/"):
+            link = BASE_URL + link
 
-        link = "https://www.moneymetals.com" + href
-        if link in seen:
-            continue
-        seen.add(link)
+        date_text = date_p.get_text(strip=True)
 
-        item = SubElement(channel, "item")
-        SubElement(item, "title").text = title
-        SubElement(item, "link").text = link
-        SubElement(item, "guid").text = link
-        SubElement(item, "pubDate").text = datetime.utcnow().strftime(
-            "%a, %d %b %Y %H:%M:%S GMT"
-        )
+        try:
+            pub_date = datetime.strptime(date_text, "%B %dth, %Y")
+        except Exception:
+            try:
+                pub_date = datetime.strptime(date_text, "%B %dst, %Y")
+            except Exception:
+                try:
+                    pub_date = datetime.strptime(date_text, "%B %dnd, %Y")
+                except Exception:
+                    try:
+                        pub_date = datetime.strptime(date_text, "%B %drd, %Y")
+                    except Exception:
+                        pub_date = datetime.utcnow()
 
-    buf = io.BytesIO()
-    ElementTree(rss).write(buf, encoding="utf-8", xml_declaration=True)
-    return buf.getvalue()
+        item = ET.SubElement(channel, "item")
+        ET.SubElement(item, "title").text = title
+        ET.SubElement(item, "link").text = link
+        ET.SubElement(item, "guid").text = link
+        ET.SubElement(item, "pubDate").text = email.utils.format_datetime(pub_date)
+
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
 class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/moneymetals.xml":
-            self.send_response(404)
-            self.end_headers()
-            return
-        try:
-            rss = build_rss()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/rss+xml; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(rss)
-        except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(str(e).encode())
 
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
 
+    def do_GET(self):
+        if self.path in ("/", "/moneymetals.xml"):
+            try:
+                rss = build_rss()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/rss+xml; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(rss)
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
+        elif self.path == "/check":
+            self.send_response(200)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-HTTPServer(("", PORT), Handler).serve_forever()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
